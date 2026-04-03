@@ -2252,11 +2252,19 @@ window.addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
   keys.add(k);
 
-  // Backpack toggle (B)
+  // Backpack toggle (B) — not while typing in a field (e.g. redeem code)
   if (k === "b") {
-    state.timeMs = Date.now();
-    if (state.ui.openMenu === "backpack") closeMenu();
-    else openMenu("backpack");
+    const t = e.target;
+    const typing =
+      t &&
+      (t.closest?.("input, textarea, select") ||
+        t.closest?.("[contenteditable='true']") ||
+        t.isContentEditable === true);
+    if (!typing) {
+      state.timeMs = Date.now();
+      if (state.ui.openMenu === "backpack") closeMenu();
+      else openMenu("backpack");
+    }
   }
 
   // Settings: close with Esc only (not movement keys)
