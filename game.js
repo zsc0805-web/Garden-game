@@ -1429,6 +1429,16 @@ function renderMenu() {
         return;
       }
 
+      if (code === "sprinks") {
+        state.inventory.gearSprinkler = (state.inventory.gearSprinkler ?? 0) + 10;
+        markCodeRedeemed(code);
+        renderInventory();
+        saveGame();
+        msg.textContent = "Redeemed! +10 Sprinklers";
+        input.value = "";
+        return;
+      }
+
       msg.textContent = "Invalid code.";
     }
 
