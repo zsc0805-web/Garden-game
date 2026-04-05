@@ -65,10 +65,15 @@ const prices = {
   beetrootSell: 3000,
   appleSeed: 10000,
   appleSell: 1000,
+  bananaSeed: 10000000,
+  bananaSell: 800000,
   lilySeed: 100000,
   lilySell: 300000,
   cactusSeed: 1000000,
   cactusFruitSell: 400000,
+  /** Not sold in shop — burner boost refund only; matches one bulb sell. */
+  oceanFernSeed: 399000,
+  oceanFernBulbSell: 399000,
   shovel: 1000,
   burnerBooster: 3000,
   gearNuke: 100000,
@@ -85,12 +90,21 @@ const BURNER_BOOST_DURATION_MS = 10000;
 const APPLE_TREE_GROW_MS = 180000;
 const APPLE_FRUIT_REGROW_MS = 60000;
 const APPLE_FRUIT_SLOTS = 3;
+/** Banana tree: 7 min mature; 5 fruits; each regrows 3 min after pick. */
+const BANANA_TREE_GROW_MS = 420000;
+const BANANA_TREE_STAGE0_MS = 140000;
+const BANANA_FRUIT_REGROW_MS = 180000;
+const BANANA_FRUIT_SLOTS = 5;
 /** Lily: carrot-like crop; 6 min to harvest (3 min invisible, 3 min growing, then full). */
 const LILY_GROW_MS = 360000;
 const LILY_STAGE0_MS = 180000;
 /** Cactus: strawberry-like bush + 2 fruits; 3 min to mature; each fruit regrows in 2 min. */
 const CACTUS_BUSH_GROW_MS = 180000;
 const CACTUS_FRUIT_REGROW_MS = 120000;
+/** Ocean fern: multi-harvest bulbs on fronds; 3 min mature; 3 bulb slots; regrow 2 min. */
+const OCEAN_FERN_GROW_MS = 180000;
+const OCEAN_FERN_BULB_REGROW_MS = 120000;
+const OCEAN_FERN_BULB_SLOTS = 3;
 const NUKE_FX_MS = 2000;
 /** Sprinkler: 1 min; 100px radius; ×5 growth; planting in range rolls 50% ×2 / 5% ×10. */
 const SPRINKLER_RANGE_PX = 100;
@@ -102,7 +116,15 @@ const FROZEN_SELL_MULT = 5;
 /** Plasma Generator (max plot): deposit one seed type, pay PLASMA_SEED_PRICE_MULT× seed price each to convert to crops in 1s; ×2/×10 roll uses 2× normal odds. */
 const PLASMA_EVOLVE_MS = 1000;
 const PLASMA_SEED_PRICE_MULT = 3;
-const PLASMA_SEED_KEYS = ["carrotSeed", "strawberrySeed", "beetrootSeed", "appleSeed", "lilySeed", "cactusSeed"];
+const PLASMA_SEED_KEYS = [
+  "carrotSeed",
+  "strawberrySeed",
+  "beetrootSeed",
+  "appleSeed",
+  "lilySeed",
+  "cactusSeed",
+  "bananaSeed",
+];
 
 /** Harvested crops only — RMB in backpack toggles favorite; Sell All skips these stacks. */
 const BACKPACK_CROP_KEYS = [
@@ -118,12 +140,18 @@ const BACKPACK_CROP_KEYS = [
   "apple1",
   "apple2",
   "apple10",
+  "banana1",
+  "banana2",
+  "banana10",
   "lily1",
   "lily2",
   "lily10",
   "cactus1",
   "cactus2",
   "cactus10",
+  "oceanFern1",
+  "oceanFern2",
+  "oceanFern10",
 ];
 
 function isBackpackCropKey(k) {
@@ -141,6 +169,7 @@ function plasmaSeedDisplayLabel(seedKey) {
   if (seedKey === "appleSeed") return "Apple seed";
   if (seedKey === "lilySeed") return "Lily seed";
   if (seedKey === "cactusSeed") return "Cactus seed";
+  if (seedKey === "bananaSeed") return "Banana seed";
   return seedKey;
 }
 
@@ -171,6 +200,10 @@ function addCropFromPlasmaRoll(seedKey, mult) {
     if (m === 10) state.inventory.cactus10 += 1;
     else if (m === 2) state.inventory.cactus2 += 1;
     else state.inventory.cactus1 += 1;
+  } else if (seedKey === "bananaSeed") {
+    if (m === 10) state.inventory.banana10 += 1;
+    else if (m === 2) state.inventory.banana2 += 1;
+    else state.inventory.banana1 += 1;
   }
 }
 
@@ -192,6 +225,23 @@ function tryPlasmaSelectSeed() {
   state.inventory[h] = 0;
   if (state.player.held?.kind === h) state.player.held = null;
   state.plasmaAuraUntilMs = state.timeMs + 950;
+  setHeldText();
+  renderInventory();
+  saveGame();
+  return true;
+}
+
+/** Return loaded seeds from the chamber to inventory (e.g. user clicks No on evolve confirm). */
+function refundPlasmaLoadedSeeds() {
+  const pg = state.plasmaGen;
+  if (pg.pending) return false;
+  if (!pg.seedKey || !isPlasmaSeedKey(pg.seedKey) || pg.count <= 0) return false;
+  const k = pg.seedKey;
+  const n = pg.count;
+  state.inventory[k] = (state.inventory[k] ?? 0) + n;
+  pg.seedKey = null;
+  pg.count = 0;
+  state.ui.plasmaGenPhase = "main";
   setHeldText();
   renderInventory();
   saveGame();
@@ -261,8 +311,10 @@ function getCropSellPriceForBaseKey(baseKey) {
   if (baseKey.startsWith("carrot") || baseKey.startsWith("strawberry")) return getCarrotSellPrice(mul);
   if (baseKey.startsWith("beetroot")) return getBeetrootSellPrice(mul);
   if (baseKey.startsWith("apple")) return getAppleSellPrice(mul);
+  if (baseKey.startsWith("banana")) return getBananaSellPrice(mul);
   if (baseKey.startsWith("lily")) return getLilySellPrice(mul);
   if (baseKey.startsWith("cactus")) return getCactusSellPrice(mul);
+  if (baseKey.startsWith("oceanFern")) return getOceanFernBulbSellPrice(mul);
   return 0;
 }
 
@@ -285,12 +337,18 @@ const FROZEN_BASE_LABELS = {
   apple1: "Apple",
   apple2: "Apple ×2",
   apple10: "Apple ×10",
+  banana1: "Banana",
+  banana2: "Banana ×2",
+  banana10: "Banana ×10",
   lily1: "Lily",
   lily2: "Lily ×2",
   lily10: "Lily ×10",
   cactus1: "Cactus fruit",
   cactus2: "Cactus fruit ×2",
   cactus10: "Cactus fruit ×10",
+  oceanFern1: "Ocean fern bulb",
+  oceanFern2: "Ocean fern bulb ×2",
+  oceanFern10: "Ocean fern bulb ×10",
 };
 
 function frozenCropDisplayLabel(fk) {
@@ -311,12 +369,20 @@ function getAppleSellPrice(multiplier) {
   return prices.appleSell * multiplier;
 }
 
+function getBananaSellPrice(multiplier) {
+  return prices.bananaSell * multiplier;
+}
+
 function getLilySellPrice(multiplier) {
   return prices.lilySell * multiplier;
 }
 
 function getCactusSellPrice(multiplier) {
   return prices.cactusFruitSell * multiplier;
+}
+
+function getOceanFernBulbSellPrice(multiplier) {
+  return prices.oceanFernBulbSell * multiplier;
 }
 
 function isBurnerBoostActive() {
@@ -341,6 +407,12 @@ function burnRefundForSeedType(seedKey, count) {
   if (seedKey === "cactusSeed") {
     return Math.floor(count * getCactusSellPrice(1) * BURNER_REFUND_RATIO);
   }
+  if (seedKey === "oceanFernSeed") {
+    return Math.floor(count * getOceanFernBulbSellPrice(1) * BURNER_REFUND_RATIO);
+  }
+  if (seedKey === "bananaSeed") {
+    return Math.floor(count * getBananaSellPrice(1) * BURNER_REFUND_RATIO);
+  }
   return Math.floor(count * getCarrotSellPrice(1) * BURNER_REFUND_RATIO);
 }
 
@@ -355,6 +427,8 @@ function defaultSaveData() {
       appleSeed: 0,
       lilySeed: 0,
       cactusSeed: 0,
+      oceanFernSeed: 0,
+      bananaSeed: 0,
       shovel: 0,
       burnerBooster: 0,
       gearNuke: 0,
@@ -371,12 +445,18 @@ function defaultSaveData() {
       apple1: 0,
       apple2: 0,
       apple10: 0,
+      banana1: 0,
+      banana2: 0,
+      banana10: 0,
       lily1: 0,
       lily2: 0,
       lily10: 0,
       cactus1: 0,
       cactus2: 0,
       cactus10: 0,
+      oceanFern1: 0,
+      oceanFern2: 0,
+      oceanFern10: 0,
       ...Object.fromEntries(FROZEN_CROP_KEYS.map((k) => [k, 0])),
     },
     player: { x: world.farm.w * 0.5, y: world.farm.h * 0.55, held: null },
@@ -500,6 +580,32 @@ function saveGame() {
                 : [],
             };
           }
+          if (p.type === "banana") {
+            return {
+              id: p.id,
+              type: "banana",
+              x: p.x,
+              y: p.y,
+              plantedAtMs: p.plantedAtMs,
+              multiplier: p.multiplier ?? 1,
+              fruits: Array.isArray(p.fruits)
+                ? p.fruits.map((f) => ({ nextGrowAtMs: f.nextGrowAtMs }))
+                : [],
+            };
+          }
+          if (p.type === "oceanFern") {
+            return {
+              id: p.id,
+              type: "oceanFern",
+              x: p.x,
+              y: p.y,
+              plantedAtMs: p.plantedAtMs,
+              multiplier: p.multiplier ?? 1,
+              fruits: Array.isArray(p.fruits)
+                ? p.fruits.map((f) => ({ nextGrowAtMs: f.nextGrowAtMs }))
+                : [],
+            };
+          }
           return {
             id: p.id,
             type:
@@ -586,6 +692,8 @@ function loadGame() {
       "appleSeed",
       "lilySeed",
       "cactusSeed",
+      "oceanFernSeed",
+      "bananaSeed",
       "shovel",
       "burnerBooster",
       "gearNuke",
@@ -602,12 +710,18 @@ function loadGame() {
       "apple1",
       "apple2",
       "apple10",
+      "banana1",
+      "banana2",
+      "banana10",
       "lily1",
       "lily2",
       "lily10",
       "cactus1",
       "cactus2",
       "cactus10",
+      "oceanFern1",
+      "oceanFern2",
+      "oceanFern10",
       ...FROZEN_CROP_KEYS,
     ]) {
       const n = inv[k];
@@ -662,11 +776,15 @@ function loadGame() {
               ? "cactus"
               : p.type === "apple"
                 ? "apple"
-                : p.type === "beetroot"
-                  ? "beetroot"
-                  : p.type === "lily"
-                    ? "lily"
-                    : "carrot";
+                : p.type === "banana"
+                  ? "banana"
+                  : p.type === "oceanFern"
+                    ? "oceanFern"
+                    : p.type === "beetroot"
+                      ? "beetroot"
+                      : p.type === "lily"
+                        ? "lily"
+                        : "carrot";
         const base = {
           id: typeof p.id === "string" ? p.id : String(Math.random()).slice(2),
           type,
@@ -713,6 +831,34 @@ function loadGame() {
                   typeof f.nextGrowAtMs === "number"
                     ? f.nextGrowAtMs
                     : base.plantedAtMs + APPLE_TREE_GROW_MS + APPLE_FRUIT_REGROW_MS,
+              };
+            }),
+          };
+        }
+        if (type === "banana") {
+          const fruits = Array.isArray(p.fruits) ? p.fruits : [];
+          return {
+            ...base,
+            fruits: Array.from({ length: BANANA_FRUIT_SLOTS }, (_, i) => {
+              const f = fruits[i] ?? {};
+              return {
+                nextGrowAtMs:
+                  typeof f.nextGrowAtMs === "number"
+                    ? f.nextGrowAtMs
+                    : base.plantedAtMs + BANANA_TREE_GROW_MS + BANANA_FRUIT_REGROW_MS,
+              };
+            }),
+          };
+        }
+        if (type === "oceanFern") {
+          const fruits = Array.isArray(p.fruits) ? p.fruits : [];
+          const defBulb = base.plantedAtMs + OCEAN_FERN_GROW_MS + OCEAN_FERN_BULB_REGROW_MS;
+          return {
+            ...base,
+            fruits: Array.from({ length: OCEAN_FERN_BULB_SLOTS }, (_, i) => {
+              const f = fruits[i] ?? {};
+              return {
+                nextGrowAtMs: typeof f.nextGrowAtMs === "number" ? f.nextGrowAtMs : defBulb,
               };
             }),
           };
@@ -938,6 +1084,8 @@ const state = {
       appleSeed: false,
       lilySeed: false,
       cactusSeed: false,
+      oceanFernSeed: false,
+      bananaSeed: false,
     },
   },
   player: {
@@ -956,6 +1104,8 @@ const state = {
     appleSeed: 0,
     lilySeed: 0,
     cactusSeed: 0,
+    oceanFernSeed: 0,
+    bananaSeed: 0,
     shovel: 0,
     burnerBooster: 0,
     gearNuke: 0,
@@ -972,12 +1122,18 @@ const state = {
     apple1: 0,
     apple2: 0,
     apple10: 0,
+    banana1: 0,
+    banana2: 0,
+    banana10: 0,
     lily1: 0,
     lily2: 0,
     lily10: 0,
     cactus1: 0,
     cactus2: 0,
     cactus10: 0,
+    oceanFern1: 0,
+    oceanFern2: 0,
+    oceanFern10: 0,
     ...Object.fromEntries(FROZEN_CROP_KEYS.map((k) => [k, 0])),
   },
   redeemedCodes: {},
@@ -1088,6 +1244,9 @@ function setHeldText() {
   else if (k === "appleSeed") heldEl.textContent = "Apple Seed";
   else if (k === "apple1" || k === "apple2" || k === "apple10")
     heldEl.textContent = k === "apple10" ? "Apple ×10" : k === "apple2" ? "Apple ×2" : "Apple";
+  else if (k === "bananaSeed") heldEl.textContent = "Banana Seed";
+  else if (k === "banana1" || k === "banana2" || k === "banana10")
+    heldEl.textContent = k === "banana10" ? "Banana ×10" : k === "banana2" ? "Banana ×2" : "Banana";
   else if (k === "lilySeed") heldEl.textContent = "Lily Seed";
   else if (k === "cactusSeed") heldEl.textContent = "Cactus Seed";
   else if (k === "lily1" || k === "lily2" || k === "lily10")
@@ -1095,6 +1254,14 @@ function setHeldText() {
   else if (k === "cactus1" || k === "cactus2" || k === "cactus10")
     heldEl.textContent =
       k === "cactus10" ? "Cactus fruit ×10" : k === "cactus2" ? "Cactus fruit ×2" : "Cactus fruit";
+  else if (k === "oceanFernSeed") heldEl.textContent = "Ocean fern seed";
+  else if (k === "oceanFern1" || k === "oceanFern2" || k === "oceanFern10")
+    heldEl.textContent =
+      k === "oceanFern10"
+        ? "Ocean fern bulb ×10"
+        : k === "oceanFern2"
+          ? "Ocean fern bulb ×2"
+          : "Ocean fern bulb";
   else if (isFrozenInventoryKey(k)) heldEl.textContent = frozenCropDisplayLabel(k);
   else heldEl.textContent = k;
 }
@@ -1123,6 +1290,8 @@ function openMenu(kind) {
       appleSeed: false,
       lilySeed: false,
       cactusSeed: false,
+      oceanFernSeed: false,
+      bananaSeed: false,
     };
   }
   if (kind === "plasmaGen") state.ui.plasmaGenPhase = "main";
@@ -1131,6 +1300,18 @@ function openMenu(kind) {
 }
 
 function closeMenu() {
+  const pg = state.plasmaGen;
+  if (
+    state.ui.openMenu === "plasmaGen" &&
+    state.ui.plasmaGenPhase === "confirm" &&
+    pg &&
+    !pg.pending &&
+    pg.seedKey &&
+    isPlasmaSeedKey(pg.seedKey) &&
+    pg.count > 0
+  ) {
+    refundPlasmaLoadedSeeds();
+  }
   state.ui.openMenu = null;
   state.ui.plasmaGenPhase = "main";
   modalEl.classList.add("hidden");
@@ -1198,6 +1379,8 @@ function renderMenu() {
       { key: "appleSeed", label: "Apple Seed", count: state.inventory.appleSeed, dot: "#5a9e3e" },
       { key: "lilySeed", label: "Lily Seed", count: state.inventory.lilySeed, dot: "#e8a8d8" },
       { key: "cactusSeed", label: "Cactus Seed", count: state.inventory.cactusSeed, dot: "#5a9e6e" },
+      { key: "oceanFernSeed", label: "Ocean fern seed", count: state.inventory.oceanFernSeed, dot: "#4a9e9e" },
+      { key: "bananaSeed", label: "Banana Seed", count: state.inventory.bananaSeed, dot: "#d4a020" },
       { key: "shovel", label: "Shovel", count: state.inventory.shovel, dot: "#c0c8e8" },
       { key: "gearNuke", label: "Garden nuke", count: state.inventory.gearNuke, dot: "#ff5533" },
       { key: "gearSprinkler", label: "Sprinkler", count: state.inventory.gearSprinkler, dot: "#6ec8ff" },
@@ -1214,12 +1397,18 @@ function renderMenu() {
       { key: "apple1", label: "Apple", count: state.inventory.apple1, dot: "#e02020" },
       { key: "apple2", label: "Apple ×2", count: state.inventory.apple2, dot: "#ff4444" },
       { key: "apple10", label: "Apple ×10", count: state.inventory.apple10, dot: "#ff6666" },
+      { key: "banana1", label: "Banana", count: state.inventory.banana1, dot: "#e8c040" },
+      { key: "banana2", label: "Banana ×2", count: state.inventory.banana2, dot: "#f0d050" },
+      { key: "banana10", label: "Banana ×10", count: state.inventory.banana10, dot: "#f8e060" },
       { key: "lily1", label: "Lily", count: state.inventory.lily1, dot: "#f0c8e8" },
       { key: "lily2", label: "Lily ×2", count: state.inventory.lily2, dot: "#f5a8d8" },
       { key: "lily10", label: "Lily ×10", count: state.inventory.lily10, dot: "#ff88c8" },
       { key: "cactus1", label: "Cactus fruit", count: state.inventory.cactus1, dot: "#c8e878" },
       { key: "cactus2", label: "Cactus fruit ×2", count: state.inventory.cactus2, dot: "#d8f088" },
       { key: "cactus10", label: "Cactus fruit ×10", count: state.inventory.cactus10, dot: "#e8ffa8" },
+      { key: "oceanFern1", label: "Ocean fern bulb", count: state.inventory.oceanFern1, dot: "#6ec8c0" },
+      { key: "oceanFern2", label: "Ocean fern bulb ×2", count: state.inventory.oceanFern2, dot: "#7ed8d0" },
+      { key: "oceanFern10", label: "Ocean fern bulb ×10", count: state.inventory.oceanFern10, dot: "#8ee8e0" },
       ...FROZEN_CROP_KEYS.map((fk) => ({
         key: fk,
         label: frozenCropDisplayLabel(fk),
@@ -1439,6 +1628,16 @@ function renderMenu() {
         return;
       }
 
+      if (code === "hd4ocean") {
+        state.inventory.oceanFernSeed += 1;
+        markCodeRedeemed(code);
+        renderInventory();
+        saveGame();
+        msg.textContent = "Redeemed! +1 Ocean fern seed";
+        input.value = "";
+        return;
+      }
+
       msg.textContent = "Invalid code.";
     }
 
@@ -1540,6 +1739,8 @@ function renderMenu() {
       { key: "appleSeed", label: "Apple seeds", count: state.inventory.appleSeed },
       { key: "lilySeed", label: "Lily seeds", count: state.inventory.lilySeed },
       { key: "cactusSeed", label: "Cactus seeds", count: state.inventory.cactusSeed },
+      { key: "oceanFernSeed", label: "Ocean fern seeds", count: state.inventory.oceanFernSeed },
+      { key: "bananaSeed", label: "Banana seeds", count: state.inventory.bananaSeed },
     ];
 
     for (const r of rows) {
@@ -1582,6 +1783,8 @@ function renderMenu() {
     if (pick.appleSeed) selTotal += burnRefundForSeedType("appleSeed", state.inventory.appleSeed);
     if (pick.lilySeed) selTotal += burnRefundForSeedType("lilySeed", state.inventory.lilySeed);
     if (pick.cactusSeed) selTotal += burnRefundForSeedType("cactusSeed", state.inventory.cactusSeed);
+    if (pick.oceanFernSeed) selTotal += burnRefundForSeedType("oceanFernSeed", state.inventory.oceanFernSeed);
+    if (pick.bananaSeed) selTotal += burnRefundForSeedType("bananaSeed", state.inventory.bananaSeed);
 
     const totalEl = document.createElement("div");
     totalEl.className = "small";
@@ -1631,6 +1834,18 @@ function renderMenu() {
         state.inventory.cactusSeed = 0;
         any = true;
         if (state.player.held?.kind === "cactusSeed") state.player.held = null;
+      }
+      if (p.oceanFernSeed && state.inventory.oceanFernSeed > 0) {
+        add += burnRefundForSeedType("oceanFernSeed", state.inventory.oceanFernSeed);
+        state.inventory.oceanFernSeed = 0;
+        any = true;
+        if (state.player.held?.kind === "oceanFernSeed") state.player.held = null;
+      }
+      if (p.bananaSeed && state.inventory.bananaSeed > 0) {
+        add += burnRefundForSeedType("bananaSeed", state.inventory.bananaSeed);
+        state.inventory.bananaSeed = 0;
+        any = true;
+        if (state.player.held?.kind === "bananaSeed") state.player.held = null;
       }
       if (!any) return;
       setMoney(state.money + add);
@@ -1736,7 +1951,8 @@ function renderMenu() {
       noBtn.type = "button";
       noBtn.textContent = "No";
       noBtn.addEventListener("click", () => {
-        closeMenu();
+        refundPlasmaLoadedSeeds();
+        renderMenu();
       });
       row.appendChild(noBtn);
 
@@ -1817,7 +2033,7 @@ function renderMenu() {
     const note = document.createElement("div");
     note.className = "small";
     note.textContent =
-      "Touch the purple Plasma panel above the freezer. No mixes: unload by evolving, or only add more of the same type.";
+      "Touch the purple Plasma panel above the freezer. No mixes: evolve to convert, tap No on the cost screen to unload seeds back to inventory, or only add more of the same type.";
     modalBodyEl.appendChild(note);
     return;
   }
@@ -2085,6 +2301,31 @@ function renderMenu() {
     );
     modalBodyEl.appendChild(cacBtn);
 
+    const banBtn = document.createElement("button");
+    banBtn.className = "btn primary";
+    banBtn.type = "button";
+    banBtn.innerHTML = `<span>Banana Seed</span><span class="small">$${prices.bananaSeed}</span>`;
+    attachShopBuyButtonWithBulk(
+      banBtn,
+      prices.bananaSeed,
+      () => {
+        if (state.money < prices.bananaSeed) return;
+        setMoney(state.money - prices.bananaSeed);
+        state.inventory.bananaSeed += 1;
+        renderInventory();
+        if (!state.player.held) selectInventoryItem("bananaSeed");
+      },
+      (n) => {
+        if (n <= 0) return;
+        const cost = n * prices.bananaSeed;
+        setMoney(state.money - cost);
+        state.inventory.bananaSeed += n;
+        renderInventory();
+        if (!state.player.held) selectInventoryItem("bananaSeed");
+      },
+    );
+    modalBodyEl.appendChild(banBtn);
+
     const note = document.createElement("div");
     note.className = "small";
     note.textContent =
@@ -2112,12 +2353,18 @@ function renderMenu() {
       { key: "apple1", label: "Apple", count: state.inventory.apple1, price: getAppleSellPrice(1) },
       { key: "apple2", label: "Apple ×2", count: state.inventory.apple2, price: getAppleSellPrice(2) },
       { key: "apple10", label: "Apple ×10", count: state.inventory.apple10, price: getAppleSellPrice(10) },
+      { key: "banana1", label: "Banana", count: state.inventory.banana1, price: getBananaSellPrice(1) },
+      { key: "banana2", label: "Banana ×2", count: state.inventory.banana2, price: getBananaSellPrice(2) },
+      { key: "banana10", label: "Banana ×10", count: state.inventory.banana10, price: getBananaSellPrice(10) },
       { key: "lily1", label: "Lily", count: state.inventory.lily1, price: getLilySellPrice(1) },
       { key: "lily2", label: "Lily ×2", count: state.inventory.lily2, price: getLilySellPrice(2) },
       { key: "lily10", label: "Lily ×10", count: state.inventory.lily10, price: getLilySellPrice(10) },
       { key: "cactus1", label: "Cactus fruit", count: state.inventory.cactus1, price: getCactusSellPrice(1) },
       { key: "cactus2", label: "Cactus fruit ×2", count: state.inventory.cactus2, price: getCactusSellPrice(2) },
       { key: "cactus10", label: "Cactus fruit ×10", count: state.inventory.cactus10, price: getCactusSellPrice(10) },
+      { key: "oceanFern1", label: "Ocean fern bulb", count: state.inventory.oceanFern1, price: getOceanFernBulbSellPrice(1) },
+      { key: "oceanFern2", label: "Ocean fern bulb ×2", count: state.inventory.oceanFern2, price: getOceanFernBulbSellPrice(2) },
+      { key: "oceanFern10", label: "Ocean fern bulb ×10", count: state.inventory.oceanFern10, price: getOceanFernBulbSellPrice(10) },
     ];
     const frozenSellItems = FROZEN_CROP_KEYS.map((fk) => ({
       key: fk,
@@ -2167,6 +2414,10 @@ function renderMenu() {
       sellableCropCount("apple1") * getAppleSellPrice(1) +
       sellableCropCount("apple2") * getAppleSellPrice(2) +
       sellableCropCount("apple10") * getAppleSellPrice(10);
+    const bnTotal =
+      sellableCropCount("banana1") * getBananaSellPrice(1) +
+      sellableCropCount("banana2") * getBananaSellPrice(2) +
+      sellableCropCount("banana10") * getBananaSellPrice(10);
     const liTotal =
       sellableCropCount("lily1") * getLilySellPrice(1) +
       sellableCropCount("lily2") * getLilySellPrice(2) +
@@ -2175,11 +2426,15 @@ function renderMenu() {
       sellableCropCount("cactus1") * getCactusSellPrice(1) +
       sellableCropCount("cactus2") * getCactusSellPrice(2) +
       sellableCropCount("cactus10") * getCactusSellPrice(10);
+    const ofTotal =
+      sellableCropCount("oceanFern1") * getOceanFernBulbSellPrice(1) +
+      sellableCropCount("oceanFern2") * getOceanFernBulbSellPrice(2) +
+      sellableCropCount("oceanFern10") * getOceanFernBulbSellPrice(10);
     const fzTotal = FROZEN_CROP_KEYS.reduce(
       (s, fk) => s + (state.inventory[fk] ?? 0) * getFrozenCropSellPrice(fk),
       0,
     );
-    sellAllBtn.innerHTML = `<span>Sell All</span><span class="small">+$${total + stTotal + btTotal + apTotal + liTotal + caTotal + fzTotal}</span>`;
+    sellAllBtn.innerHTML = `<span>Sell All</span><span class="small">+$${total + stTotal + btTotal + apTotal + bnTotal + liTotal + caTotal + ofTotal + fzTotal}</span>`;
     sellAllBtn.addEventListener("click", () => {
       const totalNow =
         sellableCropCount("carrot1") * getCarrotSellPrice(1) +
@@ -2197,6 +2452,10 @@ function renderMenu() {
         sellableCropCount("apple1") * getAppleSellPrice(1) +
         sellableCropCount("apple2") * getAppleSellPrice(2) +
         sellableCropCount("apple10") * getAppleSellPrice(10);
+      const bnTotalNow =
+        sellableCropCount("banana1") * getBananaSellPrice(1) +
+        sellableCropCount("banana2") * getBananaSellPrice(2) +
+        sellableCropCount("banana10") * getBananaSellPrice(10);
       const liTotalNow =
         sellableCropCount("lily1") * getLilySellPrice(1) +
         sellableCropCount("lily2") * getLilySellPrice(2) +
@@ -2205,11 +2464,16 @@ function renderMenu() {
         sellableCropCount("cactus1") * getCactusSellPrice(1) +
         sellableCropCount("cactus2") * getCactusSellPrice(2) +
         sellableCropCount("cactus10") * getCactusSellPrice(10);
+      const ofTotalNow =
+        sellableCropCount("oceanFern1") * getOceanFernBulbSellPrice(1) +
+        sellableCropCount("oceanFern2") * getOceanFernBulbSellPrice(2) +
+        sellableCropCount("oceanFern10") * getOceanFernBulbSellPrice(10);
       const fzTotalNow = FROZEN_CROP_KEYS.reduce(
         (s, fk) => s + (state.inventory[fk] ?? 0) * getFrozenCropSellPrice(fk),
         0,
       );
-      const grand = totalNow + stTotalNow + btTotalNow + apTotalNow + liTotalNow + caTotalNow + fzTotalNow;
+      const grand =
+        totalNow + stTotalNow + btTotalNow + apTotalNow + bnTotalNow + liTotalNow + caTotalNow + ofTotalNow + fzTotalNow;
       if (grand <= 0) return;
       for (const key of BACKPACK_CROP_KEYS) {
         if (state.backpackFavorites?.[key]) continue;
@@ -2243,6 +2507,8 @@ function renderInventory() {
     { key: "appleSeed", label: "Apple Seed", count: state.inventory.appleSeed, chip: "#5a9e3e" },
     { key: "lilySeed", label: "Lily Seed", count: state.inventory.lilySeed, chip: "#e8a8d8" },
     { key: "cactusSeed", label: "Cactus Seed", count: state.inventory.cactusSeed, chip: "#5a9e6e" },
+    { key: "oceanFernSeed", label: "Ocean fern seed", count: state.inventory.oceanFernSeed, chip: "#4a9e9e" },
+    { key: "bananaSeed", label: "Banana Seed", count: state.inventory.bananaSeed, chip: "#d4a020" },
     { key: "shovel", label: "Shovel", count: state.inventory.shovel, chip: "#9aa3c4" },
     { key: "gearNuke", label: "Garden nuke", count: state.inventory.gearNuke, chip: "#ff5533" },
     { key: "gearSprinkler", label: "Sprinkler", count: state.inventory.gearSprinkler, chip: "#6ec8ff" },
@@ -2259,12 +2525,18 @@ function renderInventory() {
     { key: "apple1", label: "Apple", count: state.inventory.apple1, chip: "#e02020" },
     { key: "apple2", label: "Apple ×2", count: state.inventory.apple2, chip: "#ff4444" },
     { key: "apple10", label: "Apple ×10", count: state.inventory.apple10, chip: "#ff6666" },
+    { key: "banana1", label: "Banana", count: state.inventory.banana1, chip: "#e8c040" },
+    { key: "banana2", label: "Banana ×2", count: state.inventory.banana2, chip: "#f0d050" },
+    { key: "banana10", label: "Banana ×10", count: state.inventory.banana10, chip: "#f8e060" },
     { key: "lily1", label: "Lily", count: state.inventory.lily1, chip: "#f0c8e8" },
     { key: "lily2", label: "Lily ×2", count: state.inventory.lily2, chip: "#f5a8d8" },
     { key: "lily10", label: "Lily ×10", count: state.inventory.lily10, chip: "#ff88c8" },
     { key: "cactus1", label: "Cactus fruit", count: state.inventory.cactus1, chip: "#c8e878" },
     { key: "cactus2", label: "Cactus fruit ×2", count: state.inventory.cactus2, chip: "#d8f088" },
     { key: "cactus10", label: "Cactus fruit ×10", count: state.inventory.cactus10, chip: "#e8ffa8" },
+    { key: "oceanFern1", label: "Ocean fern bulb", count: state.inventory.oceanFern1, chip: "#6ec8c0" },
+    { key: "oceanFern2", label: "Ocean fern bulb ×2", count: state.inventory.oceanFern2, chip: "#7ed8d0" },
+    { key: "oceanFern10", label: "Ocean fern bulb ×10", count: state.inventory.oceanFern10, chip: "#8ee8e0" },
     ...FROZEN_CROP_KEYS.map((fk) => ({
       key: fk,
       label: frozenCropDisplayLabel(fk),
@@ -2316,6 +2588,10 @@ function selectInventoryItem(key) {
   if (key === "apple1" && state.inventory.apple1 <= 0) return;
   if (key === "apple2" && state.inventory.apple2 <= 0) return;
   if (key === "apple10" && state.inventory.apple10 <= 0) return;
+  if (key === "bananaSeed" && state.inventory.bananaSeed <= 0) return;
+  if (key === "banana1" && state.inventory.banana1 <= 0) return;
+  if (key === "banana2" && state.inventory.banana2 <= 0) return;
+  if (key === "banana10" && state.inventory.banana10 <= 0) return;
   if (key === "lilySeed" && state.inventory.lilySeed <= 0) return;
   if (key === "lily1" && state.inventory.lily1 <= 0) return;
   if (key === "lily2" && state.inventory.lily2 <= 0) return;
@@ -2324,6 +2600,10 @@ function selectInventoryItem(key) {
   if (key === "cactus1" && state.inventory.cactus1 <= 0) return;
   if (key === "cactus2" && state.inventory.cactus2 <= 0) return;
   if (key === "cactus10" && state.inventory.cactus10 <= 0) return;
+  if (key === "oceanFernSeed" && state.inventory.oceanFernSeed <= 0) return;
+  if (key === "oceanFern1" && state.inventory.oceanFern1 <= 0) return;
+  if (key === "oceanFern2" && state.inventory.oceanFern2 <= 0) return;
+  if (key === "oceanFern10" && state.inventory.oceanFern10 <= 0) return;
   if (isFrozenInventoryKey(key) && (state.inventory[key] ?? 0) <= 0) return;
   state.player.held = { kind: key };
   setHeldText();
@@ -2339,8 +2619,10 @@ function plantAtPlayer() {
       state.player.held.kind !== "strawberrySeed" &&
       state.player.held.kind !== "beetrootSeed" &&
       state.player.held.kind !== "appleSeed" &&
+      state.player.held.kind !== "bananaSeed" &&
       state.player.held.kind !== "lilySeed" &&
-      state.player.held.kind !== "cactusSeed")
+      state.player.held.kind !== "cactusSeed" &&
+      state.player.held.kind !== "oceanFernSeed")
   )
     return;
   // must be in farm area
@@ -2349,15 +2631,19 @@ function plantAtPlayer() {
   if (state.player.held.kind === "strawberrySeed" && state.inventory.strawberrySeed <= 0) return;
   if (state.player.held.kind === "beetrootSeed" && state.inventory.beetrootSeed <= 0) return;
   if (state.player.held.kind === "appleSeed" && state.inventory.appleSeed <= 0) return;
+  if (state.player.held.kind === "bananaSeed" && state.inventory.bananaSeed <= 0) return;
   if (state.player.held.kind === "lilySeed" && state.inventory.lilySeed <= 0) return;
   if (state.player.held.kind === "cactusSeed" && state.inventory.cactusSeed <= 0) return;
+  if (state.player.held.kind === "oceanFernSeed" && state.inventory.oceanFernSeed <= 0) return;
 
   if (state.player.held.kind === "carrotSeed") state.inventory.carrotSeed -= 1;
   else if (state.player.held.kind === "strawberrySeed") state.inventory.strawberrySeed -= 1;
   else if (state.player.held.kind === "beetrootSeed") state.inventory.beetrootSeed -= 1;
   else if (state.player.held.kind === "appleSeed") state.inventory.appleSeed -= 1;
+  else if (state.player.held.kind === "bananaSeed") state.inventory.bananaSeed -= 1;
   else if (state.player.held.kind === "lilySeed") state.inventory.lilySeed -= 1;
-  else state.inventory.cactusSeed -= 1;
+  else if (state.player.held.kind === "cactusSeed") state.inventory.cactusSeed -= 1;
+  else state.inventory.oceanFernSeed -= 1;
   renderInventory();
 
   const id = crypto?.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2);
@@ -2369,14 +2655,19 @@ function plantAtPlayer() {
       ? "strawberry"
       : state.player.held.kind === "cactusSeed"
         ? "cactus"
-        : state.player.held.kind === "beetrootSeed"
-          ? "beetroot"
-          : state.player.held.kind === "appleSeed"
-            ? "apple"
-            : state.player.held.kind === "lilySeed"
-              ? "lily"
-              : "carrot";
+        : state.player.held.kind === "oceanFernSeed"
+          ? "oceanFern"
+          : state.player.held.kind === "beetrootSeed"
+            ? "beetroot"
+            : state.player.held.kind === "appleSeed"
+              ? "apple"
+              : state.player.held.kind === "bananaSeed"
+                ? "banana"
+                : state.player.held.kind === "lilySeed"
+                  ? "lily"
+                  : "carrot";
   const cactusFruit0 = state.timeMs + CACTUS_BUSH_GROW_MS + CACTUS_FRUIT_REGROW_MS;
+  const oceanFernBulb0 = state.timeMs + OCEAN_FERN_GROW_MS + OCEAN_FERN_BULB_REGROW_MS;
   state.plants.push({
     id,
     type,
@@ -2403,7 +2694,19 @@ function plantAtPlayer() {
               nextGrowAtMs: state.timeMs + APPLE_TREE_GROW_MS + APPLE_FRUIT_REGROW_MS,
             })),
           }
-        : {}),
+        : type === "banana"
+          ? {
+              fruits: Array.from({ length: BANANA_FRUIT_SLOTS }, () => ({
+                nextGrowAtMs: state.timeMs + BANANA_TREE_GROW_MS + BANANA_FRUIT_REGROW_MS,
+              })),
+            }
+        : type === "oceanFern"
+          ? {
+              fruits: Array.from({ length: OCEAN_FERN_BULB_SLOTS }, () => ({
+                nextGrowAtMs: oceanFernBulb0,
+              })),
+            }
+          : {}),
   });
   saveGame();
 
@@ -2412,8 +2715,10 @@ function plantAtPlayer() {
     (type === "carrot" && state.inventory.carrotSeed <= 0) ||
     (type === "strawberry" && state.inventory.strawberrySeed <= 0) ||
     (type === "cactus" && state.inventory.cactusSeed <= 0) ||
+    (type === "oceanFern" && state.inventory.oceanFernSeed <= 0) ||
     (type === "beetroot" && state.inventory.beetrootSeed <= 0) ||
     (type === "apple" && state.inventory.appleSeed <= 0) ||
+    (type === "banana" && state.inventory.bananaSeed <= 0) ||
     (type === "lily" && state.inventory.lilySeed <= 0);
   if (out) {
     state.player.held = null;
@@ -2433,8 +2738,10 @@ function plantAllHeldSeedsAtPlayer() {
       held.kind !== "strawberrySeed" &&
       held.kind !== "beetrootSeed" &&
       held.kind !== "appleSeed" &&
+      held.kind !== "bananaSeed" &&
       held.kind !== "lilySeed" &&
-      held.kind !== "cactusSeed")
+      held.kind !== "cactusSeed" &&
+      held.kind !== "oceanFernSeed")
   )
     return true;
   if (state.player.x > world.farm.w - 8) return true;
@@ -2449,9 +2756,13 @@ function plantAllHeldSeedsAtPlayer() {
           ? state.inventory.beetrootSeed
           : kind === "appleSeed"
             ? state.inventory.appleSeed
-            : kind === "lilySeed"
-              ? state.inventory.lilySeed
-              : state.inventory.cactusSeed;
+            : kind === "bananaSeed"
+              ? state.inventory.bananaSeed
+              : kind === "lilySeed"
+                ? state.inventory.lilySeed
+                : kind === "cactusSeed"
+                  ? state.inventory.cactusSeed
+                  : state.inventory.oceanFernSeed;
   if (n <= 0) return true;
 
   const type =
@@ -2459,16 +2770,21 @@ function plantAllHeldSeedsAtPlayer() {
       ? "strawberry"
       : kind === "cactusSeed"
         ? "cactus"
-        : kind === "beetrootSeed"
-          ? "beetroot"
-          : kind === "appleSeed"
-            ? "apple"
-            : kind === "lilySeed"
-              ? "lily"
-              : "carrot";
+        : kind === "oceanFernSeed"
+          ? "oceanFern"
+          : kind === "beetrootSeed"
+            ? "beetroot"
+            : kind === "appleSeed"
+              ? "apple"
+              : kind === "bananaSeed"
+                ? "banana"
+                : kind === "lilySeed"
+                  ? "lily"
+                  : "carrot";
   const x = clamp(state.player.x, 18, world.farm.w - 18);
   const y = clamp(state.player.y, 18, world.farm.h - 18);
   const cactusFruitT = state.timeMs + CACTUS_BUSH_GROW_MS + CACTUS_FRUIT_REGROW_MS;
+  const oceanFernBulbT = state.timeMs + OCEAN_FERN_GROW_MS + OCEAN_FERN_BULB_REGROW_MS;
 
   for (let i = 0; i < n; i++) {
     const id = crypto?.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2);
@@ -2499,7 +2815,19 @@ function plantAllHeldSeedsAtPlayer() {
                 nextGrowAtMs: state.timeMs + APPLE_TREE_GROW_MS + APPLE_FRUIT_REGROW_MS,
               })),
             }
-          : {}),
+          : type === "banana"
+            ? {
+                fruits: Array.from({ length: BANANA_FRUIT_SLOTS }, () => ({
+                  nextGrowAtMs: state.timeMs + BANANA_TREE_GROW_MS + BANANA_FRUIT_REGROW_MS,
+                })),
+              }
+          : type === "oceanFern"
+            ? {
+                fruits: Array.from({ length: OCEAN_FERN_BULB_SLOTS }, () => ({
+                  nextGrowAtMs: oceanFernBulbT,
+                })),
+              }
+            : {}),
     });
   }
 
@@ -2507,8 +2835,10 @@ function plantAllHeldSeedsAtPlayer() {
   else if (kind === "strawberrySeed") state.inventory.strawberrySeed = 0;
   else if (kind === "beetrootSeed") state.inventory.beetrootSeed = 0;
   else if (kind === "appleSeed") state.inventory.appleSeed = 0;
+  else if (kind === "bananaSeed") state.inventory.bananaSeed = 0;
   else if (kind === "lilySeed") state.inventory.lilySeed = 0;
-  else state.inventory.cactusSeed = 0;
+  else if (kind === "cactusSeed") state.inventory.cactusSeed = 0;
+  else state.inventory.oceanFernSeed = 0;
   state.player.held = null;
   renderInventory();
   saveGame();
@@ -2641,6 +2971,66 @@ function tryPickupNearby() {
       continue;
     }
 
+    if (p.type === "banana") {
+      const treeAge = (state.timeMs - p.plantedAtMs) * sprinklerGrowMultForPlant(p);
+      if (treeAge < BANANA_TREE_GROW_MS) continue;
+      const fruitOffsets = [
+        { x: -18 * mul, y: -20 * mul },
+        { x: -9 * mul, y: -27 * mul },
+        { x: 0, y: -30 * mul },
+        { x: 9 * mul, y: -27 * mul },
+        { x: 18 * mul, y: -20 * mul },
+      ];
+      for (let i = 0; i < BANANA_FRUIT_SLOTS; i++) {
+        const f = p.fruits?.[i];
+        if (!f) continue;
+        if (state.timeMs < f.nextGrowAtMs) continue;
+        const fx = p.x + fruitOffsets[i].x;
+        const fy = p.y + fruitOffsets[i].y;
+        const fruitPickupRadius = pickupRadius + 10 * mul;
+        if (dist(state.player.x, state.player.y, fx, fy) > fruitPickupRadius) continue;
+
+        f.nextGrowAtMs = state.timeMs + BANANA_FRUIT_REGROW_MS;
+        if (mul === 10) state.inventory.banana10 += 1;
+        else if (mul === 2) state.inventory.banana2 += 1;
+        else state.inventory.banana1 += 1;
+        state.player.held = { kind: `banana${mul}` };
+        renderInventory();
+        saveGame();
+        return;
+      }
+      continue;
+    }
+
+    if (p.type === "oceanFern") {
+      const fernAge = (state.timeMs - p.plantedAtMs) * sprinklerGrowMultForPlant(p);
+      if (fernAge < OCEAN_FERN_GROW_MS) continue;
+      const fruitOffsets = [
+        { x: -13 * mul, y: -14 * mul },
+        { x: 13 * mul, y: -12 * mul },
+        { x: 0, y: -20 * mul },
+      ];
+      for (let i = 0; i < OCEAN_FERN_BULB_SLOTS; i++) {
+        const f = p.fruits?.[i];
+        if (!f) continue;
+        if (state.timeMs < f.nextGrowAtMs) continue;
+        const fx = p.x + fruitOffsets[i].x;
+        const fy = p.y + fruitOffsets[i].y;
+        const fruitPickupRadius = pickupRadius + 10 * mul;
+        if (dist(state.player.x, state.player.y, fx, fy) > fruitPickupRadius) continue;
+
+        f.nextGrowAtMs = state.timeMs + OCEAN_FERN_BULB_REGROW_MS;
+        if (mul === 10) state.inventory.oceanFern10 += 1;
+        else if (mul === 2) state.inventory.oceanFern2 += 1;
+        else state.inventory.oceanFern1 += 1;
+        state.player.held = { kind: `oceanFern${mul}` };
+        renderInventory();
+        saveGame();
+        return;
+      }
+      continue;
+    }
+
     // carrot
     if (p.stage < 2) continue;
     if (dist(state.player.x, state.player.y, p.x, p.y) > pickupRadius) continue;
@@ -2765,7 +3155,74 @@ function pickupAllReadyTouchingPlayer() {
 
   for (const p of state.plants) {
     if (p.harvested) continue;
-    if (p.type === "strawberry" || p.type === "cactus" || p.type === "apple") continue;
+    if (p.type !== "banana") continue;
+    const treeAge = (state.timeMs - p.plantedAtMs) * sprinklerGrowMultForPlant(p);
+    if (treeAge < BANANA_TREE_GROW_MS) continue;
+    const mul = p.multiplier ?? 1;
+    const pickupRadius = 28 + (mul - 1) * 18;
+    const fruitOffsets = [
+      { x: -18 * mul, y: -20 * mul },
+      { x: -9 * mul, y: -27 * mul },
+      { x: 0, y: -30 * mul },
+      { x: 9 * mul, y: -27 * mul },
+      { x: 18 * mul, y: -20 * mul },
+    ];
+    for (let i = 0; i < BANANA_FRUIT_SLOTS; i++) {
+      const f = p.fruits?.[i];
+      if (!f) continue;
+      if (state.timeMs < f.nextGrowAtMs) continue;
+      const fx = p.x + fruitOffsets[i].x;
+      const fy = p.y + fruitOffsets[i].y;
+      const fruitPickupRadius = pickupRadius + 10 * mul;
+      if (dist(px, py, fx, fy) > fruitPickupRadius) continue;
+
+      f.nextGrowAtMs = state.timeMs + BANANA_FRUIT_REGROW_MS;
+      if (mul === 10) state.inventory.banana10 += 1;
+      else if (mul === 2) state.inventory.banana2 += 1;
+      else state.inventory.banana1 += 1;
+      any = true;
+    }
+  }
+
+  for (const p of state.plants) {
+    if (p.harvested) continue;
+    if (p.type !== "oceanFern") continue;
+    const fernAge = (state.timeMs - p.plantedAtMs) * sprinklerGrowMultForPlant(p);
+    if (fernAge < OCEAN_FERN_GROW_MS) continue;
+    const mul = p.multiplier ?? 1;
+    const pickupRadius = 28 + (mul - 1) * 18;
+    const fruitOffsets = [
+      { x: -13 * mul, y: -14 * mul },
+      { x: 13 * mul, y: -12 * mul },
+      { x: 0, y: -20 * mul },
+    ];
+    for (let i = 0; i < OCEAN_FERN_BULB_SLOTS; i++) {
+      const f = p.fruits?.[i];
+      if (!f) continue;
+      if (state.timeMs < f.nextGrowAtMs) continue;
+      const fx = p.x + fruitOffsets[i].x;
+      const fy = p.y + fruitOffsets[i].y;
+      const fruitPickupRadius = pickupRadius + 10 * mul;
+      if (dist(px, py, fx, fy) > fruitPickupRadius) continue;
+
+      f.nextGrowAtMs = state.timeMs + OCEAN_FERN_BULB_REGROW_MS;
+      if (mul === 10) state.inventory.oceanFern10 += 1;
+      else if (mul === 2) state.inventory.oceanFern2 += 1;
+      else state.inventory.oceanFern1 += 1;
+      any = true;
+    }
+  }
+
+  for (const p of state.plants) {
+    if (p.harvested) continue;
+    if (
+      p.type === "strawberry" ||
+      p.type === "cactus" ||
+      p.type === "apple" ||
+      p.type === "banana" ||
+      p.type === "oceanFern"
+    )
+      continue;
     if (p.stage < 2) continue;
     const mul = p.multiplier ?? 1;
     const pickupRadius = 28 + (mul - 1) * 18;
@@ -2933,7 +3390,30 @@ function tick(ts) {
 }
 
 function update(dt) {
+  /** While in range, age uses ×SPRINKLER_GROW_MULT. On the frame a sprinkler hits untilMs, isPointInActiveSprinklerRange already ignores it (no boost) but the disk is still in state until we filter — so we mark by geometry (any disk) before filter, then bake if no active boost remains. */
+  const plantIdxNearAnySprinklerDisk = new Set();
+  for (let pi = 0; pi < state.plants.length; pi++) {
+    const p = state.plants[pi];
+    if (p.harvested) continue;
+    for (const s of state.sprinklers) {
+      if (dist(p.x, p.y, s.x, s.y) <= SPRINKLER_RANGE_PX) {
+        plantIdxNearAnySprinklerDisk.add(pi);
+        break;
+      }
+    }
+  }
   state.sprinklers = state.sprinklers.filter((s) => s.untilMs > state.timeMs);
+  let bakedSprinklerProgress = false;
+  for (const pi of plantIdxNearAnySprinklerDisk) {
+    const p = state.plants[pi];
+    if (!p || p.harvested) continue;
+    if (sprinklerGrowMultForPlant(p) > 1) continue;
+    const raw = state.timeMs - p.plantedAtMs;
+    if (raw <= 0) continue;
+    p.plantedAtMs = state.timeMs - raw * SPRINKLER_GROW_MULT;
+    bakedSprinklerProgress = true;
+  }
+  if (bakedSprinklerProgress) saveGame();
 
   if (state.plasmaGen.pending && state.plasmaGen.finishAtMs > 0 && state.timeMs >= state.plasmaGen.finishAtMs) {
     completePlasmaEvolve();
@@ -3084,10 +3564,23 @@ function update(dt) {
       else p.stage = 2;
       continue;
     }
+    if (p.type === "oceanFern") {
+      const half = OCEAN_FERN_GROW_MS / 2;
+      if (ageMs < half) p.stage = 0;
+      else if (ageMs < OCEAN_FERN_GROW_MS) p.stage = 1;
+      else p.stage = 2;
+      continue;
+    }
     if (p.type === "apple") {
       // tree: 0-1m sapling, 1-3m growing, 3m+ full
       if (ageMs < 60000) p.stage = 0;
       else if (ageMs < APPLE_TREE_GROW_MS) p.stage = 1;
+      else p.stage = 2;
+      continue;
+    }
+    if (p.type === "banana") {
+      if (ageMs < BANANA_TREE_STAGE0_MS) p.stage = 0;
+      else if (ageMs < BANANA_TREE_GROW_MS) p.stage = 1;
       else p.stage = 2;
       continue;
     }
@@ -3127,6 +3620,18 @@ function update(dt) {
       }
     }
     if (p.type === "apple" && Array.isArray(p.fruits)) {
+      for (const f of p.fruits) {
+        if (!f || state.timeMs >= f.nextGrowAtMs) continue;
+        f.nextGrowAtMs = Math.max(state.timeMs, f.nextGrowAtMs - fruitAccel);
+      }
+    }
+    if (p.type === "banana" && Array.isArray(p.fruits)) {
+      for (const f of p.fruits) {
+        if (!f || state.timeMs >= f.nextGrowAtMs) continue;
+        f.nextGrowAtMs = Math.max(state.timeMs, f.nextGrowAtMs - fruitAccel);
+      }
+    }
+    if (p.type === "oceanFern" && Array.isArray(p.fruits)) {
       for (const f of p.fruits) {
         if (!f || state.timeMs >= f.nextGrowAtMs) continue;
         f.nextGrowAtMs = Math.max(state.timeMs, f.nextGrowAtMs - fruitAccel);
@@ -3184,7 +3689,9 @@ function plantBodyRemainingMs(p) {
   const ageMs = (state.timeMs - p.plantedAtMs) * g;
   if (p.type === "strawberry") return Math.max(0, 5000 - ageMs);
   if (p.type === "cactus") return Math.max(0, CACTUS_BUSH_GROW_MS - ageMs);
+  if (p.type === "oceanFern") return Math.max(0, OCEAN_FERN_GROW_MS - ageMs);
   if (p.type === "apple") return Math.max(0, APPLE_TREE_GROW_MS - ageMs);
+  if (p.type === "banana") return Math.max(0, BANANA_TREE_GROW_MS - ageMs);
   if (p.type === "beetroot") return Math.max(0, 60000 - ageMs);
   if (p.type === "lily") return Math.max(0, LILY_GROW_MS - ageMs);
   return Math.max(0, 2000 - ageMs);
@@ -3261,6 +3768,50 @@ function getGrowTooltipAt(mx, my) {
           bestD = d;
           const rem = f.nextGrowAtMs - state.timeMs;
           best = { text: `Apple ready in ${formatGrowRemaining(rem)}`, mx, my };
+        }
+      }
+    }
+
+    if (p.type === "banana" && ageMs >= BANANA_TREE_GROW_MS && p.stage >= 2 && Array.isArray(p.fruits)) {
+      const fruitOffsets = [
+        { x: -18 * mul, y: -20 * mul },
+        { x: -9 * mul, y: -27 * mul },
+        { x: 0, y: -30 * mul },
+        { x: 9 * mul, y: -27 * mul },
+        { x: 18 * mul, y: -20 * mul },
+      ];
+      const fruitPickupRadius = pickupRadius + 10 * mul;
+      for (let fi = 0; fi < BANANA_FRUIT_SLOTS; fi++) {
+        const f = p.fruits[fi];
+        if (!f || state.timeMs >= f.nextGrowAtMs) continue;
+        const fx = p.x + fruitOffsets[fi].x;
+        const fy = p.y + fruitOffsets[fi].y;
+        const d = dist(mx, my, fx, fy);
+        if (d <= fruitPickupRadius + 6 && d < bestD) {
+          bestD = d;
+          const rem = f.nextGrowAtMs - state.timeMs;
+          best = { text: `Banana ready in ${formatGrowRemaining(rem)}`, mx, my };
+        }
+      }
+    }
+
+    if (p.type === "oceanFern" && ageMs >= OCEAN_FERN_GROW_MS && p.stage >= 2 && Array.isArray(p.fruits)) {
+      const fruitOffsets = [
+        { x: -13 * mul, y: -14 * mul },
+        { x: 13 * mul, y: -12 * mul },
+        { x: 0, y: -20 * mul },
+      ];
+      const fruitPickupRadius = pickupRadius + 10 * mul;
+      for (let fi = 0; fi < OCEAN_FERN_BULB_SLOTS; fi++) {
+        const f = p.fruits[fi];
+        if (!f || state.timeMs >= f.nextGrowAtMs) continue;
+        const fx = p.x + fruitOffsets[fi].x;
+        const fy = p.y + fruitOffsets[fi].y;
+        const d = dist(mx, my, fx, fy);
+        if (d <= fruitPickupRadius + 6 && d < bestD) {
+          bestD = d;
+          const rem = f.nextGrowAtMs - state.timeMs;
+          best = { text: `Bulb ready in ${formatGrowRemaining(rem)}`, mx, my };
         }
       }
     }
@@ -3345,7 +3896,15 @@ function draw() {
   // plants
   for (const p of state.plants) {
     if (p.harvested) continue;
-    if (p.type !== "strawberry" && p.type !== "cactus" && p.type !== "apple" && p.stage === 0) continue; // carrots invisible first second
+    if (
+      p.type !== "strawberry" &&
+      p.type !== "cactus" &&
+      p.type !== "apple" &&
+      p.type !== "banana" &&
+      p.type !== "oceanFern" &&
+      p.stage === 0
+    )
+      continue; // carrots invisible first second
     const sizeMul = p.multiplier ?? 1;
     if (p.type === "strawberry") {
       // bush
@@ -3395,6 +3954,40 @@ function draw() {
           drawApple(p.x + fruitOffsets[i].x, p.y + fruitOffsets[i].y, 0.85 * sizeMul);
         }
       }
+    } else if (p.type === "banana") {
+      const treeScale = (p.stage === 1 ? 0.82 : 1) * sizeMul;
+      drawBananaTree(p.x, p.y, treeScale, p.stage);
+      if (p.stage >= 2 && Array.isArray(p.fruits)) {
+        const fruitOffsets = [
+          { x: -18 * sizeMul, y: -20 * sizeMul },
+          { x: -9 * sizeMul, y: -27 * sizeMul },
+          { x: 0, y: -30 * sizeMul },
+          { x: 9 * sizeMul, y: -27 * sizeMul },
+          { x: 18 * sizeMul, y: -20 * sizeMul },
+        ];
+        for (let i = 0; i < BANANA_FRUIT_SLOTS; i++) {
+          const f = p.fruits[i];
+          if (!f) continue;
+          if (state.timeMs < f.nextGrowAtMs) continue;
+          drawBanana(p.x + fruitOffsets[i].x, p.y + fruitOffsets[i].y, 0.82 * sizeMul);
+        }
+      }
+    } else if (p.type === "oceanFern") {
+      const fernScale = (p.stage === 1 ? 0.8 : 1) * sizeMul;
+      drawOceanFernBody(p.x, p.y, fernScale, p.stage);
+      if (p.stage >= 2 && Array.isArray(p.fruits)) {
+        const fruitOffsets = [
+          { x: -13 * sizeMul, y: -14 * sizeMul },
+          { x: 13 * sizeMul, y: -12 * sizeMul },
+          { x: 0, y: -20 * sizeMul },
+        ];
+        for (let i = 0; i < OCEAN_FERN_BULB_SLOTS; i++) {
+          const f = p.fruits[i];
+          if (!f) continue;
+          if (state.timeMs < f.nextGrowAtMs) continue;
+          drawOceanFernBulb(p.x + fruitOffsets[i].x, p.y + fruitOffsets[i].y, 0.8 * sizeMul);
+        }
+      }
     } else {
       const base = p.stage === 1 ? 0.55 : 1;
       if (p.type === "beetroot") drawBeetroot(p.x, p.y, base * sizeMul);
@@ -3415,15 +4008,23 @@ function draw() {
   } else if (state.player.held?.kind?.startsWith("lily") && !state.player.held.kind.endsWith("Seed")) {
     const mul = state.player.held.kind === "lily10" ? 10 : state.player.held.kind === "lily2" ? 2 : 1;
     drawLily(state.player.x + 18, state.player.y - 14, 0.72 * mul);
-  } else if (state.player.held?.kind?.startsWith("apple")) {
+  } else if (state.player.held?.kind?.startsWith("apple") && !state.player.held.kind.endsWith("Seed")) {
     const mul = state.player.held.kind === "apple10" ? 10 : state.player.held.kind === "apple2" ? 2 : 1;
     drawApple(state.player.x + 18, state.player.y - 16, 0.85 * mul);
+  } else if (state.player.held?.kind?.startsWith("banana") && !state.player.held.kind.endsWith("Seed")) {
+    const mul =
+      state.player.held.kind === "banana10" ? 10 : state.player.held.kind === "banana2" ? 2 : 1;
+    drawBanana(state.player.x + 18, state.player.y - 16, 0.82 * mul);
   } else if (state.player.held?.kind?.startsWith("strawberry")) {
     const mul = state.player.held.kind === "strawberry10" ? 10 : state.player.held.kind === "strawberry2" ? 2 : 1;
     drawStrawberry(state.player.x + 18, state.player.y - 14, 0.8 * mul);
   } else if (state.player.held?.kind?.startsWith("cactus") && !state.player.held.kind.endsWith("Seed")) {
     const mul = state.player.held.kind === "cactus10" ? 10 : state.player.held.kind === "cactus2" ? 2 : 1;
     drawCactusFruit(state.player.x + 18, state.player.y - 14, 0.78 * mul);
+  } else if (state.player.held?.kind?.startsWith("oceanFern") && !state.player.held.kind.endsWith("Seed")) {
+    const mul =
+      state.player.held.kind === "oceanFern10" ? 10 : state.player.held.kind === "oceanFern2" ? 2 : 1;
+    drawOceanFernBulb(state.player.x + 18, state.player.y - 14, 0.8 * mul);
   } else if (state.player.held?.kind?.startsWith("beetroot")) {
     const mul = state.player.held.kind === "beetroot10" ? 10 : state.player.held.kind === "beetroot2" ? 2 : 1;
     drawBeetroot(state.player.x + 18, state.player.y - 14, 0.8 * mul);
@@ -3433,15 +4034,17 @@ function draw() {
     if (base) {
       const ox = state.player.x + 18;
       const oy = state.player.y - 14;
-      const oyApple = state.player.y - 16;
+      const oyTall = state.player.y - 16;
       const mul = base.endsWith("10") ? 10 : base.endsWith("2") ? 2 : 1;
       if (base.startsWith("carrot")) drawCarrot(ox, oy, 0.75 * mul);
       else if (base.startsWith("strawberry")) drawStrawberry(ox, oy, 0.8 * mul);
       else if (base.startsWith("cactus")) drawCactusFruit(ox, oy, 0.78 * mul);
+      else if (base.startsWith("oceanFern")) drawOceanFernBulb(ox, oy, 0.8 * mul);
       else if (base.startsWith("beetroot")) drawBeetroot(ox, oy, 0.8 * mul);
-      else if (base.startsWith("apple")) drawApple(ox, oyApple, 0.85 * mul);
+      else if (base.startsWith("apple")) drawApple(ox, oyTall, 0.85 * mul);
+      else if (base.startsWith("banana")) drawBanana(ox, oyTall, 0.82 * mul);
       else if (base.startsWith("lily")) drawLily(ox, oy, 0.72 * mul);
-      const cy = base.startsWith("apple") ? oyApple : oy;
+      const cy = base.startsWith("apple") || base.startsWith("banana") ? oyTall : oy;
       const glowR = frozenGlowRadiusForHeldBase(base, mul);
       drawFrozenOverlay(ox, cy, glowR);
     }
@@ -3451,10 +4054,14 @@ function draw() {
     drawStrawberrySeed(state.player.x + 16, state.player.y - 10);
   } else if (state.player.held?.kind === "cactusSeed") {
     drawCactusSeed(state.player.x + 16, state.player.y - 10);
+  } else if (state.player.held?.kind === "oceanFernSeed") {
+    drawOceanFernSeed(state.player.x + 16, state.player.y - 10);
   } else if (state.player.held?.kind === "beetrootSeed") {
     drawBeetrootSeed(state.player.x + 16, state.player.y - 10);
   } else if (state.player.held?.kind === "appleSeed") {
     drawAppleSeed(state.player.x + 16, state.player.y - 10);
+  } else if (state.player.held?.kind === "bananaSeed") {
+    drawBananaSeed(state.player.x + 16, state.player.y - 10);
   } else if (state.player.held?.kind === "lilySeed") {
     drawLilySeed(state.player.x + 16, state.player.y - 10);
   } else if (state.player.held?.kind === "gearNuke") {
@@ -3661,8 +4268,10 @@ function drawFreezerMiniCrop(cx, cy, baseKey) {
   if (baseKey.startsWith("carrot")) drawCarrot(cx, cy, sc * mul);
   else if (baseKey.startsWith("strawberry")) drawStrawberry(cx, cy, sc * mul);
   else if (baseKey.startsWith("cactus")) drawCactusFruit(cx, cy, sc * mul);
+  else if (baseKey.startsWith("oceanFern")) drawOceanFernBulb(cx, cy, sc * mul);
   else if (baseKey.startsWith("beetroot")) drawBeetroot(cx, cy, sc * mul);
   else if (baseKey.startsWith("apple")) drawApple(cx, cy, sc * mul);
+  else if (baseKey.startsWith("banana")) drawBanana(cx, cy, sc * mul);
   else if (baseKey.startsWith("lily")) drawLily(cx, cy, sc * mul);
 }
 
@@ -3811,8 +4420,10 @@ function frozenGlowRadiusForHeldBase(base, mul) {
     base.startsWith("carrot") ? 0.75 * mul :
     base.startsWith("strawberry") ? 0.8 * mul :
     base.startsWith("cactus") ? 0.78 * mul :
+    base.startsWith("oceanFern") ? 0.8 * mul :
     base.startsWith("beetroot") ? 0.8 * mul :
     base.startsWith("apple") ? 0.85 * mul :
+    base.startsWith("banana") ? 0.82 * mul :
     base.startsWith("lily") ? 0.72 * mul : mul;
 
   if (base.startsWith("strawberry")) {
@@ -3829,11 +4440,26 @@ function frozenGlowRadiusForHeldBase(base, mul) {
     return Math.hypot(rx, ry) * 1.08;
   }
 
+  if (base.startsWith("oceanFern")) {
+    const sy = sc * 0.9;
+    const rx = 12 * sc;
+    const ry = 18 * sy;
+    return Math.hypot(rx, ry) * 1.08;
+  }
+
+  if (base.startsWith("banana")) {
+    const sy = sc * 1;
+    const rx = 11 * sc;
+    const ry = 22 * sy;
+    return Math.hypot(rx, ry) * 1.08;
+  }
+
   const localR =
     base.startsWith("carrot") ? 36 :
     base.startsWith("beetroot") ? 38 :
     base.startsWith("cactus") ? 34 :
     base.startsWith("apple") ? 42 :
+    base.startsWith("banana") ? 40 :
     base.startsWith("lily") ? 38 : 34;
 
   return localR * sc * 1.08;
@@ -4423,6 +5049,121 @@ function drawCactusFruit(x, y, scale = 1) {
   ctx.restore();
 }
 
+function drawOceanFernSeed(x, y) {
+  drawSeedSquare(x, y, "#2a8a8a");
+}
+
+function drawOceanFernBody(x, y, scale = 1, stage = 2) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale * 0.88);
+
+  ctx.globalAlpha = 0.18;
+  ctx.fillStyle = "#000";
+  ctx.beginPath();
+  ctx.ellipse(0, 18, 16, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  const frond = (rot, len, w0) => {
+    ctx.save();
+    ctx.rotate(rot);
+    const g = ctx.createLinearGradient(0, 0, 0, -len);
+    g.addColorStop(0, "#1a6a62");
+    g.addColorStop(0.45, "#3a9e92");
+    g.addColorStop(1, "#5ec8b8");
+    ctx.strokeStyle = g;
+    ctx.lineWidth = w0;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(0, 4);
+    ctx.quadraticCurveTo(-w0 * 1.2, -len * 0.45, 0, -len);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, 4);
+    ctx.quadraticCurveTo(w0 * 1.2, -len * 0.45, 0, -len);
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  if (stage <= 0) {
+    ctx.strokeStyle = "#2a7a72";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(0, 14);
+    ctx.lineTo(0, -2);
+    ctx.stroke();
+    frond(-0.5, 14, 2);
+    frond(0.5, 12, 2);
+    ctx.restore();
+    return;
+  }
+
+  ctx.strokeStyle = "#1a5a52";
+  ctx.lineWidth = 4;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(0, 20);
+  ctx.quadraticCurveTo(2, 2, 0, -8);
+  ctx.stroke();
+
+  const n = stage >= 2 ? 7 : 5;
+  for (let i = 0; i < n; i++) {
+    const a = -0.95 + (i / (n - 1)) * 1.9;
+    frond(a, stage >= 2 ? 26 + (i % 3) * 2 : 18, 2.2 + (i % 2) * 0.4);
+  }
+
+  ctx.restore();
+}
+
+function drawOceanFernBulb(x, y, scale = 1) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale * 0.92);
+
+  const t = state.timeMs * 0.003;
+  ctx.globalAlpha = 0.22 + 0.08 * Math.sin(t);
+  const glow = ctx.createRadialGradient(0, 4, 2, 0, 6, 18);
+  glow.addColorStop(0, "rgba(180,255,248,0.9)");
+  glow.addColorStop(0.5, "rgba(80,200,220,0.35)");
+  glow.addColorStop(1, "rgba(40,120,160,0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(0, 6, 16, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  const body = ctx.createLinearGradient(-8, -6, 10, 14);
+  body.addColorStop(0, "#f0ffff");
+  body.addColorStop(0.4, "#a8e8e0");
+  body.addColorStop(1, "#4a9e9a");
+  ctx.fillStyle = body;
+  ctx.beginPath();
+  ctx.moveTo(0, -8);
+  ctx.quadraticCurveTo(11, 2, 9, 14);
+  ctx.quadraticCurveTo(0, 20, -9, 14);
+  ctx.quadraticCurveTo(-11, 2, 0, -8);
+  ctx.fill();
+
+  ctx.strokeStyle = "#2a6a68";
+  ctx.lineWidth = 1.8;
+  ctx.stroke();
+
+  ctx.fillStyle = "rgba(255,255,255,0.55)";
+  ctx.beginPath();
+  ctx.ellipse(-4, 0, 3.5, 6, -0.3, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = "#3a8a82";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, -8);
+  ctx.lineTo(0, -12);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
 function drawTree(x, y, scale = 1, stage = 2) {
   ctx.save();
   ctx.translate(x, y);
@@ -4493,6 +5234,198 @@ function drawApple(x, y, scale = 1) {
   ctx.beginPath();
   ctx.ellipse(6, -16, 5, 3, 0.5, 0, Math.PI * 2);
   ctx.fill();
+  ctx.restore();
+}
+
+function drawBananaSeed(x, y) {
+  drawSeedSquare(x, y, "#c4a820");
+}
+
+/** Banana plant: layered pseudostem + large paddle leaves (Musa-like); stages match apple tree timing. */
+function drawBananaTree(x, y, scale = 1, stage = 2) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale * 0.72);
+
+  const drawPseudostem = (h, wTop, wBot) => {
+    const g = ctx.createLinearGradient(-wBot, 0, wBot, 0);
+    g.addColorStop(0, "#3d5a32");
+    g.addColorStop(0.15, "#5a7d48");
+    g.addColorStop(0.5, "#6a8f52");
+    g.addColorStop(0.85, "#5a7d48");
+    g.addColorStop(1, "#3d5a32");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(-wBot, h);
+    ctx.quadraticCurveTo(-wBot * 0.92, h * 0.45, -wTop * 0.95, 4);
+    ctx.lineTo(wTop * 0.95, 4);
+    ctx.quadraticCurveTo(wBot * 0.92, h * 0.45, wBot, h);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = "rgba(45,38,28,0.35)";
+    ctx.lineWidth = 1.2;
+    for (let i = -2; i <= 2; i++) {
+      ctx.beginPath();
+      ctx.moveTo(i * 3.2, h - 4);
+      ctx.quadraticCurveTo(i * 2.8, h * 0.5, i * 1.8, 6);
+      ctx.stroke();
+    }
+    ctx.fillStyle = "rgba(35,28,20,0.25)";
+    ctx.fillRect(-wBot * 0.35, h - 10, wBot * 0.7, 10);
+  };
+
+  /** Single paddle leaf from crown; angle in radians, length scale 0.6–1 */
+  const drawLeaf = (ang, lenMul, droop) => {
+    ctx.save();
+    ctx.rotate(ang);
+    const L = 52 * lenMul;
+    const W = 11 * lenMul;
+    ctx.fillStyle = "#2d6b38";
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.bezierCurveTo(L * 0.35, -W * 0.35 + droop, L * 0.75, -W * 0.5, L, -W * 0.15);
+    ctx.bezierCurveTo(L * 1.02, 0, L * 0.78, W * 0.55, L * 0.4, W * 0.5 + droop * 0.5);
+    ctx.bezierCurveTo(L * 0.12, W * 0.35, 0, 0, 0, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = "rgba(12,48,22,0.45)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.quadraticCurveTo(L * 0.5, droop * 0.3, L * 0.92, -W * 0.08);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(110,180,90,0.2)";
+    ctx.beginPath();
+    ctx.moveTo(L * 0.15, -W * 0.08);
+    ctx.bezierCurveTo(L * 0.45, -W * 0.25, L * 0.8, -W * 0.12, L * 0.95, 0);
+    ctx.lineTo(L * 0.4, W * 0.15);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  };
+
+  if (stage <= 0) {
+    drawPseudostem(52, 5.5, 7);
+    ctx.fillStyle = "#5a9a4a";
+    ctx.beginPath();
+    ctx.moveTo(0, 2);
+    ctx.quadraticCurveTo(10, -8, 6, -22);
+    ctx.quadraticCurveTo(2, -18, 0, 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = "#2a5a28";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, 2);
+    ctx.quadraticCurveTo(5, -12, 4, -20);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  drawPseudostem(64, 7.5, 9.5);
+
+  ctx.save();
+  ctx.translate(0, 2);
+  if (stage >= 1) {
+    drawLeaf(-2.15, 0.72, 4);
+    drawLeaf(-0.85, 0.88, 2);
+    drawLeaf(0.15, 1, 0);
+    drawLeaf(1.05, 0.9, 2);
+    drawLeaf(2.0, 0.78, 5);
+    drawLeaf(-2.65, 0.55, 6);
+    drawLeaf(2.55, 0.52, 7);
+  }
+  if (stage >= 2) {
+    ctx.globalAlpha = 0.92;
+    drawLeaf(-1.45, 0.95, 1);
+    drawLeaf(0.55, 0.98, -1);
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+
+  ctx.fillStyle = "rgba(45,85,42,0.35)";
+  ctx.beginPath();
+  ctx.ellipse(0, 3, 10, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawBanana(x, y, scale = 1) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(-0.62);
+  ctx.scale(scale * 0.76, scale * 1);
+
+  // Slender crescent: tighter gap between convex outer arc and concave inner edge.
+  const buildBananaPath = () => {
+    ctx.beginPath();
+    ctx.moveTo(-0.8, -20);
+    ctx.bezierCurveTo(10, -25, 28, -16, 33, 2);
+    ctx.bezierCurveTo(36, 14, 28, 27, 16, 29.5);
+    ctx.bezierCurveTo(11, 28.5, 7.5, 18, 5.5, 5);
+    ctx.bezierCurveTo(3.5, -8, 1.5, -16.5, -0.8, -20);
+    ctx.closePath();
+  };
+
+  const peelGrad = ctx.createLinearGradient(-6, -18, 30, 24);
+  peelGrad.addColorStop(0, "#b8c878");
+  peelGrad.addColorStop(0.08, "#d8dc98");
+  peelGrad.addColorStop(0.22, "#f2e8a8");
+  peelGrad.addColorStop(0.45, "#f5d84a");
+  peelGrad.addColorStop(0.68, "#e8c030");
+  peelGrad.addColorStop(0.88, "#d4a018");
+  peelGrad.addColorStop(1, "#6b4420");
+  ctx.fillStyle = peelGrad;
+  buildBananaPath();
+  ctx.fill();
+
+  const ridge = ctx.createLinearGradient(-8, -4, 12, 18);
+  ridge.addColorStop(0, "rgba(120,82,30,0)");
+  ridge.addColorStop(0.35, "rgba(100,70,28,0.2)");
+  ridge.addColorStop(0.72, "rgba(80,55,22,0.34)");
+  ridge.addColorStop(1, "rgba(60,40,18,0.12)");
+  ctx.fillStyle = ridge;
+  ctx.beginPath();
+  ctx.moveTo(2.5, -8);
+  ctx.bezierCurveTo(5, 4, 7, 16, 9.5, 22);
+  ctx.bezierCurveTo(7, 21, 4.5, 10, 2.5, -8);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = "rgba(255,252,220,0.38)";
+  ctx.beginPath();
+  ctx.ellipse(19, -2, 3.2, 17, 0.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = "rgba(90,62,24,0.45)";
+  ctx.lineWidth = 1;
+  buildBananaPath();
+  ctx.stroke();
+
+  ctx.fillStyle = "#4a3020";
+  ctx.beginPath();
+  ctx.ellipse(-0.5, -20.5, 2.4, 1.9, -0.3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#2a1a10";
+  ctx.beginPath();
+  ctx.ellipse(0.2, -21, 1.2, 0.95, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "rgba(90,55,30,0.35)";
+  const spots = [
+    [14, 0],
+    [20, 6],
+    [12, 10],
+    [24, 14],
+    [17, 18],
+  ];
+  for (const [sx, sy] of spots) {
+    ctx.beginPath();
+    ctx.arc(sx, sy, 0.45, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   ctx.restore();
 }
 
